@@ -1,0 +1,2099 @@
+CAIRNAI: PERSONAL AI WORKSPACE
+MASTER PROJECT EXECUTION SPECIFICATION
+
+PROJECT INTENT
+
+Build a production-oriented personal AI workspace that acts as my own persistent LLM client.
+
+The motivation is simple: I do not want to repeatedly open ChatGPT, Claude, Gemini, or other web interfaces just to have a conversation with an LLM.
+
+I want one application that stays available as my personal AI interface and connects to LLMs through my local 9Router instance.
+
+9Router is a free, open-source local proxy and smart gateway that exposes one unified endpoint in front of many upstream AI providers. See section 0 for what that means for the design.
+
+This project will be open sourced. Anyone must be able to clone it, add their own API key for the provider they use, choose any model that provider offers, and start chatting. 9Router is my default and recommended gateway. It is not the only supported provider. See section 0.
+
+Speed is a core requirement. When I use CairnAI, the application itself must never feel slow. I do not want to observe any latency that the app adds. See section 27.
+
+Modular decomposition is mandatory. The work is done in small modules, one at a time, and in no other way. There are no exceptions. See section 1A.
+
+I also want to see progress at any time. Claude Code maintains a PROGRESS.md file in the repository root that shows exactly how much is done, and where I can write instructions. See section 2A.
+
+The product should eventually feel less like a "ChatGPT clone" and more like a personal AI operating workspace.
+
+Core product statement:
+
+"A personal AI workspace with multi-model routing, persistent conversations, document RAG, streaming inference, file interaction, session-based history, local project/workspace storage, and tool/MCP integration."
+
+This is intended to become a serious portfolio project demonstrating both software engineering and AI engineering.
+
+============================================================
+0. PRECONDITIONS, PROJECT NAME AND OPEN ASSUMPTIONS
+============================================================
+
+PROJECT NAME
+
+The project is named CairnAI.
+
+A cairn is a stack of stones that marks a trail. It reflects the idea behind the
+product: sessions and history that mark where I have been and let me return.
+
+- Use "CairnAI" as the product name in the docs, README, UI title and package metadata.
+- Use lowercase "cairnai" for repository, package and identifier names where a
+  lowercase form is needed.
+- Keep the display name in a single configuration location so it can be changed
+  later. Do not scatter the string through the codebase.
+- Domain, GitHub, package-registry and trademark availability have NOT been
+  verified. Do not claim ownership of any domain or handle.
+- Do not describe the name as unique or trademarked anywhere in the docs.
+
+EXPECTED INPUTS
+
+- DESIGN.md: I will place it in the repository root before execution starts.
+  If it is missing when you begin, record that as an open dependency in
+  PROGRESS.md, do not fabricate a design system, and use neutral
+  placeholder styling until it is provided.
+- Phase Executor skill: see section 1 for how to handle its presence or absence.
+
+WHAT 9ROUTER IS AND WHAT THAT MEANS FOR THE DESIGN
+
+9Router is a free, open-source (MIT-licensed) local proxy and smart gateway
+(project: github.com/decolua/9router). It sits between a client and many upstream
+AI providers and exposes one unified endpoint. It was built mainly for AI coding
+tools (Claude Code, Cursor, Cline, Copilot and similar). My application is a
+different kind of client of the same gateway: a general personal AI workspace.
+
+Understood from the project's documentation and community sources, NOT yet
+verified against my running instance:
+
+- It runs locally as a proxy with a web dashboard. A commonly reported default is
+  http://localhost:20128 with the API under /v1.
+- The unified endpoint is reported to be OpenAI-compatible and to translate
+  between upstream provider formats.
+- Upstream provider accounts, API keys and OAuth connections are configured
+  INSIDE 9Router (its dashboard), not in my application.
+- It supports "combos": virtual model IDs that group several models with
+  automatic fallback. Fallback, quota tracking and account round-robin happen
+  inside 9Router.
+- It can optionally require an API key from clients.
+- Beyond chat it is reported to expose other endpoints, such as embeddings.
+  Exact availability depends on version and configured providers.
+- The number of supported providers and models differs between sources and
+  changes between versions. Do not hardcode or advertise a number.
+
+DESIGN CONSEQUENCES
+
+1. For a 9Router profile, my app holds only what it needs to talk to 9Router:
+   a base URL and, if required, a 9Router API key. Upstream provider keys stay
+   inside 9Router. My app must never ask for, copy, store or log them. For other
+   provider profiles the app holds that provider's own API key under the rules
+   in the providers section below.
+2. 9Router owns provider-level routing and fallback for 9Router profiles. My
+   app must NOT reimplement provider fallback, quota tracking or account
+   rotation. In this project "multi-model routing" means: discover the models
+   each configured provider offers (including 9Router combos), let me select
+   them (default, per-session, per-conversation, mid-session), and record which
+   model was used.
+3. Because 9Router and many other providers expose OpenAI-compatible endpoints,
+   one generic OpenAI-compatible adapter can serve 9Router and many others. The
+   gateway/provider interface (see section 9) is the boundary. Add a native
+   adapter only when a provider's API is not OpenAI-compatible, and only as
+   listed in the providers section below. Do not add layers beyond that.
+4. Model metadata (context window, tool support, multimodal support) may be
+   missing or incomplete in the model listing. Keep an app-level metadata layer
+   with safe defaults and user overrides. Do not assume the gateway provides it.
+5. Combos can hide which upstream model actually answered. Record what the
+   gateway reports where available. Keep the requested model ID and the actual
+   responding model as separate fields if both are available.
+6. The gateway is local. The default deployment is local-first: backend and
+   9Router on the same machine. If the app is ever deployed remotely it cannot
+   reach a localhost 9Router unless deliberately exposed. Document this in the
+   deployment architecture.
+7. The frontend never calls 9Router or any other provider directly. Only the backend does.
+8. 9Router's own security posture matters. Verify that its dashboard password
+   has been changed from any default and that its endpoint is not exposed beyond
+   localhost without an API key. Document this in docs/08-SECURITY.md.
+9. Gateway health is a first-class state. 9Router not running, unreachable, no
+   providers configured, and providers exhausted or rate-limited are distinct,
+   user-visible error states, not one generic failure.
+10. Some providers routed through 9Router may rely on subscription or OAuth
+    sessions, free tiers with limits, or terms that restrict proxy use. Managing
+    that is my responsibility as the operator, but the BRD Risks section must
+    record upstream availability, quota limits and provider-terms risk.
+
+VERIFY IN PHASE 0 (against my running instance and its documentation, not memory)
+
+- actual base URL and port, and whether an API key is required
+- how models and combos are listed and what metadata each entry carries
+- streaming format, and how mid-stream errors and fallback appear to the client
+- tool/function-calling passthrough, and which models honour it
+- whether an embeddings endpoint exists and which embedding models it offers
+- error formats, rate-limit and quota responses
+- whether responses reveal the actual upstream model used
+- how model IDs behave over time (renames, availability changes)
+
+Do not assume it behaves like any other provider's API.
+Record verified findings in docs/03-TECHNICAL-DECISIONS.md and in the
+9Router Integration section of docs/01-ARCHITECTURE.md.
+If a capability I expect is missing or unclear (for example tool calling or
+embeddings), document the limitation and how the architecture handles it.
+Do not paper over it.
+
+PROVIDERS, MODELS AND API KEYS (OPEN-SOURCE REQUIREMENT)
+
+This project will be open sourced. Anyone must be able to clone it, add their
+own API key for the provider they use, pick any model that provider offers, and
+chat. 9Router is my default and recommended gateway. It is not the only one.
+
+Provider profiles
+
+- A provider profile has: id, display name, adapter type, base URL, a reference
+  to its stored credential (never the raw key inside the profile record),
+  optional extra headers, an enabled flag, and optional per-model metadata
+  overrides.
+- Profiles are added, edited, tested, disabled and removed at runtime from the
+  Settings dialog. No code change and no restart.
+- Any number of profiles can exist. One is marked default.
+- A fresh install has no profile configured. First run shows a clear empty state
+  that leads to adding one. Provide presets that only prefill the form (adapter
+  type and a verified base URL): 9Router, generic OpenAI-compatible, Anthropic,
+  Google Gemini. Presets never contain keys.
+- Adapter types, implemented in this order:
+  1. openai-compatible: the widely used chat-completions style API with
+     streaming and, where available, model listing. Serves 9Router and any
+     hosted or self-hosted provider that exposes this style, including local
+     runners on localhost.
+  2. anthropic: that provider's native messages API.
+  3. google-gemini: that provider's native API.
+  Verify each API contract against that provider's current official
+  documentation in Phase 0. Do not rely on memory. Further adapters go behind
+  the same interface.
+- Internal adapter interface: list models, stream chat, report capabilities,
+  test connection, normalize errors. Provider-specific errors are normalized
+  into the app's distinct error states: unreachable, unauthorized, rate
+  limited, quota exhausted, model not found, malformed stream, timeout.
+- Only claim support for a provider that has a passing integration test or a
+  documented manual verification. Everything else is listed as untested in
+  docs/13-PROVIDERS.md and in the README.
+
+Models
+
+- Models for a profile come from its model-listing endpoint when it has one.
+  Cache the list and refresh it in the background (see section 27).
+- If a provider has no listing, or an incomplete one, I can add a model ID
+  manually. Manually added models persist per profile.
+- A model is always identified by the pair (profile id, model id). Two
+  providers can expose the same model ID.
+- I can change the model at any time: the app default, per session, and
+  between messages inside a session. Changing it never loses or rewrites
+  history. The context builder adapts to the new model's context window and
+  capabilities.
+- Capability metadata (context window, tool calling, vision) comes from the
+  provider when it reports it, otherwise from my overrides, otherwise it is
+  unknown. Unknown is never assumed to be supported.
+- Each assistant message records the profile, the requested model and, when
+  reported, the model that actually answered.
+
+API keys and secrets (safe to open source)
+
+- Keys are entered in the Settings dialog or supplied through environment
+  variables. Only the backend holds them. The UI never shows a saved key again.
+- Storage is decided by ADR. Prefer the operating system credential store. If
+  it is unavailable, use a local file outside the repository with owner-only
+  permissions. Never plain text in the workspace database or in exports.
+- The repository ships .env.example with placeholder names only, a .gitignore
+  that covers secrets and the local workspace, and an automated secret scan
+  (pre-commit or CI) so a real key cannot be committed.
+- Workspace export and backup exclude keys.
+- A key is sent only to the base URL of the profile it belongs to. Do not
+  follow a redirect to a different host with the auth header attached.
+- Validate base URLs (http or https only). Allow localhost and private
+  addresses because local runners need them. Warn when a non-local host uses
+  plain http.
+- Never log keys. Redact them from error messages.
+
+Configuration
+
+- Non-secret settings (profiles without keys, default model, theme) live in the
+  local workspace settings. Secrets follow the rules above.
+- No key rotation, load balancing or failover inside my app for direct provider
+  profiles. Leave an extension point and document it. For 9Router profiles,
+  9Router does that.
+
+============================================================
+1. EXECUTION RULES
+============================================================
+
+Before writing substantial implementation code:
+
+1. Inspect the entire repository.
+2. Inspect all existing source code, configuration, package files, documentation, tests, and project structure.
+3. Read the design.md file that I will provide.
+4. Treat design.md as a primary design input.
+5. Inspect all available Claude Code skills.
+6. Locate the Phase Executor / phase-executor skill if it exists.
+7. If it exists, execute/use it according to its own instructions.
+8. If it does not exist, do not pretend that it was executed; use an equivalent phased execution process manually.
+9. Do not immediately start randomly generating application code.
+10. First establish requirements, architecture, data model, technical decisions, implementation phases, and acceptance criteria.
+11. Create the engineering documentation files inside the repository before substantial implementation begins.
+12. Keep documentation synchronized with implementation.
+13. Do not silently override design.md. If requirements conflict, identify and document the conflict and make a reasoned engineering decision.
+14. Do not ask me to manually design the entire architecture. Make reasonable engineering decisions yourself and document them.
+15. Ask me only when a genuinely blocking product decision cannot reasonably be inferred.
+16. Work in modular decomposition only (section 1A). This is mandatory, not a preference.
+17. Keep PROGRESS.md current and follow the instructions I write in its MY INSTRUCTIONS section (section 2A).
+
+This is an engineering project, not a tutorial exercise.
+
+============================================================
+1A. MODULAR WORKING METHOD
+============================================================
+
+Build CairnAI as a set of small modules with clear boundaries, and build them
+one at a time.
+
+Why: an AI agent cannot build everything at once. Quality drops and context is
+wasted when it tries. Small modules are easier to test, review and replace.
+
+MANDATORY
+
+Modular decomposition is the only permitted way of working on this project. It
+is not a preference and it has no exceptions.
+
+- Do not generate the whole application, or several modules, in one step.
+- Do not write implementation code for a module before its interface is written
+  down (in the architecture document or the module's README).
+- Before every task, write a short task brief in PROGRESS.md: the module, the
+  slice, the interface it uses, the tests, and the files it will touch. Start
+  coding only after that.
+- A change that touches the internals of more than one module must be split into
+  module-sized changes. The only allowed multi-module change is a planned
+  integration slice (rule 9), and even that goes through public interfaces.
+- If a task cannot be split into module-sized pieces, stop and split it first.
+  Do not proceed with an oversized task.
+- Size guideline: a slice is about 400 changed lines or fewer, excluding tests
+  and generated files. A larger slice needs a written reason in PROGRESS.md.
+- If a violation happens (a big-bang change, or reaching into another module's
+  internals), stop, split or revert it, and record it in PROGRESS.md before
+  continuing.
+- Where practical, one module per work session.
+- This rule wins over speed. Never skip it to finish faster.
+
+MODULE MAP
+
+Phase 0 defines the module map in docs/01-ARCHITECTURE.md: for each module its
+name, responsibility, public interface, dependencies and folder.
+
+A starting point, to be adjusted in Phase 0:
+
+- workspace and storage
+- sessions, conversations and messages
+- provider gateway (adapters, profiles, model catalog)
+- streaming
+- files
+- document processing and RAG
+- MCP and tools
+- skills
+- context builder
+- settings and secrets
+- UI shell and UI components (sidebar, composer, drawer)
+- observability and the performance harness
+
+RULES
+
+1. One module at a time. Finish and verify a module before starting another that
+   depends on it.
+2. Define the module's public interface first (types and contract), write it in
+   the architecture document or the module's README, then implement behind it.
+3. Modules talk only through public interfaces. No reaching into another
+   module's internals. No circular dependencies. Dependencies point one way:
+   UI, then application services, then modules, then storage and gateways.
+   Enforce this with a dependency check if the chosen stack supports one.
+4. Each module has its own folder, a short README (purpose, interface,
+   dependencies, how to test), and its own tests. Modules it depends on are
+   replaced by stubs or mocks so it can be tested alone.
+5. Keep files small and single-purpose. Split a file that does several jobs. As a
+   guideline, avoid files over about 300 lines and document any exception.
+6. Every task is module-sized: one module, or one clear slice of a module, small
+   enough to review as a single change. Commit each finished slice with a clear
+   message.
+7. Hot-path modules (streaming, the send path, the context builder, message
+   rendering) are built and benchmarked on their own before integration
+   (section 27).
+8. The provider gateway, storage, vector store and MCP client sit behind
+   interfaces, so any of them can be replaced without touching the rest.
+9. After modules pass alone, integrate a thin vertical slice early in Phase 2:
+   one message sent, streamed, saved and shown end to end. Then widen from
+   there. This exposes integration problems early.
+10. Track module status in MEMORY.md and PROGRESS.md: not started,
+    interface defined, implemented, tested, integrated.
+11. Do not create modules for deferred features (section 28). Leave extension
+    points only.
+
+Modules are boundaries with a purpose, not layers for their own sake. Do not
+create a module or an interface that has one caller and no reason to be
+replaced, except the boundaries listed above.
+
+============================================================
+2. REQUIRED ENGINEERING ARTIFACTS
+============================================================
+
+The project documentation is part of the actual deliverable.
+
+Create the documentation directly inside the repository so it is version-controlled with the code.
+
+Canonical documentation location:
+
+docs/
+
+At minimum create:
+
+docs/00-BRD.md
+docs/01-ARCHITECTURE.md
+docs/02-REQUIREMENTS.md
+docs/03-TECHNICAL-DECISIONS.md
+docs/04-DATA-MODEL.md
+docs/05-API-SPECIFICATION.md
+docs/06-RAG-ARCHITECTURE.md
+docs/07-MCP-ARCHITECTURE.md
+docs/08-SECURITY.md
+docs/09-UI-ARCHITECTURE.md
+docs/10-IMPLEMENTATION-PLAN.md
+docs/11-TESTING-STRATEGY.md
+docs/12-PERFORMANCE.md
+docs/13-PROVIDERS.md
+
+At the repository root also create:
+
+PROGRESS.md
+RULES.md
+CLAUDE.md
+
+and, at the moment implementation begins (not before):
+
+MEMORY.md
+
+See section 2A for what each file does.
+
+Markdown is the canonical engineering-document format because it is version-control friendly, readable on GitHub, easy to diff, easy for agents to consume, and supports Mermaid diagrams.
+
+The following two files are mandatory and must remain separate:
+
+docs/00-BRD.md
+docs/01-ARCHITECTURE.md
+
+Do not merge them into one document.
+
+Markdown stays the single source of truth for every engineering document.
+If I later need a PDF or DOCX version of the BRD or architecture, generate it as
+an export from the Markdown source on request. Do not maintain parallel copies
+by hand.
+
+If the Phase Executor skill has its own documentation convention, follow it where appropriate while preserving the BRD and architecture as explicit canonical artifacts.
+
+============================================================
+2A. PROJECT FILE MAP: WHAT EACH FILE DOES
+============================================================
+
+This project uses seven kinds of files. Each has one job. Keep them separate.
+Together they let any session, in any chat or on any AI tool, pick the project
+up without re-reading the whole codebase and without guessing.
+
+Names and locations in this project:
+
+- Requirements (the PRD role):  docs/00-BRD.md and docs/02-REQUIREMENTS.md
+  Created in Phase 0.
+- Architecture:                 docs/01-ARCHITECTURE.md
+  Created in Phase 0.
+- Rules:                        RULES.md at the repository root, plus a short CLAUDE.md pointer
+  Created in Phase 0, after the technology decisions are made.
+- Phases:                       docs/10-IMPLEMENTATION-PLAN.md
+  Created in Phase 0.
+- Design:                       design.md at the repository root
+  Provided by me before execution starts.
+- Memory:                       MEMORY.md at the repository root
+  Created when implementation begins, not before.
+- Progress:                     PROGRESS.md at the repository root
+  Created in Phase 0, updated after every work session.
+
+1. REQUIREMENTS (docs/00-BRD.md, docs/02-REQUIREMENTS.md)
+
+What it does: defines what is being built, who it is for, and which features it
+must have. It holds the goals, non-goals, target user, journeys, functional and
+non-functional requirements, MVP scope and acceptance criteria. In this project
+the BRD plays the role of a PRD. Requirement IDs live in 02-REQUIREMENTS.md.
+
+Rule: every feature that gets built traces to a requirement ID. If it is not
+there, add it there first, then build it.
+
+2. ARCHITECTURE (docs/01-ARCHITECTURE.md)
+
+What it does: describes how the app fits together. It covers the app flow, the
+components, the file and folder structure, and the technical stack with the
+reasons for each choice.
+
+It must contain the repository layout (which folder holds what) and the key
+application flows (send and stream, persist, switch session, upload to RAG, MCP
+tool call, add provider and change model).
+
+Rule: code follows the architecture. If the implementation needs to deviate,
+update this file and record the decision in the same change.
+
+3. RULES (RULES.md, referenced from CLAUDE.md)
+
+What it does: sets boundaries for the AI. It says which libraries to use or
+avoid, how to handle errors, and what the AI should and should not do.
+
+Create it in Phase 0 after the technology decisions, and before implementation.
+Write it short, imperative and specific. Build it from this specification and
+from design.md. Do not invent rules that contradict either. Seed it with:
+
+- Stack and dependencies: use only the stack chosen in docs/03-TECHNICAL-DECISIONS.md.
+  Adding a dependency needs a recorded decision. Prefer fewer dependencies.
+  A dependency must be actively maintained and license-compatible with open
+  sourcing. List the libraries to avoid, each with its reason.
+- Error handling: use the normalized provider error states. Never swallow an
+  error. Never show a generic "something went wrong". Every user-visible error
+  has a plain message and an action. Never leak keys or file contents into logs
+  or messages.
+- Security: keys stay in the backend. The frontend never calls a provider.
+  Uploaded documents and tool output are untrusted. Validate files and paths.
+  No secrets in commits.
+- Performance: the hot-path budgets in section 27. No buffering on the stream
+  path. No blocking work on the send path.
+- Design and copy: follow design.md. Its bans in section 0.2 apply to all UI,
+  docs and README text (no purple gradients, no pill shapes, no fake metrics,
+  no emoji icons, no em dashes, and the rest of that list).
+- Scope: build only the current phase. Do not build deferred features. The only
+  routes are /, /privacy and /terms.
+- Verification: do not claim a task is done without running the tests. Do not
+  claim provider support without a test. Do not invent API behaviour, check the
+  official documentation.
+- Modules (mandatory): work in modular decomposition only (section 1A). One module at a time. Define
+  the interface first. Talk to other modules only through their public
+  interfaces. Keep files small and single-purpose. Give each module its own
+  README and tests.
+- Working style: read MEMORY.md first. Do not re-read the whole codebase. Make
+  the smallest change that solves the problem. Do not touch unrelated files.
+  Ask before destructive actions (deleting data, force pushes, mass rewrites).
+  Do not edit design.md without asking. Update the docs together with the code, and
+  update PROGRESS.md at the end of every session.
+
+CLAUDE.md: a short file at the repository root (about 30 lines) that tells
+Claude Code to read RULES.md, MEMORY.md, PROGRESS.md and design.md at the start
+of every session. Its first lines must state the mandatory rule: work in modular
+decomposition only (section 1A). Claude Code reads CLAUDE.md automatically and can import other files
+from it with @path syntax. Confirm the current syntax in the Claude Code
+documentation. Other AI tools use different file names for this purpose.
+Mention that in the README.
+
+4. PHASES (docs/10-IMPLEMENTATION-PLAN.md)
+
+What it does: breaks the project into steps small enough to build and verify
+one at a time, because an AI cannot build everything at once and quality drops
+when it tries. Each phase follows section 24 (goal, inputs, dependencies, tasks,
+files, decisions, acceptance criteria, tests, risks, verification) and carries a
+status: not started, in progress, blocked or complete.
+
+Rule: work on one phase at a time. Do not start the next phase until the
+acceptance criteria pass and MEMORY.md is updated. Reorder phases only with a
+recorded reason. The starting phases are in section 23.
+
+5. DESIGN (design.md)
+
+What it does: covers the visual side. Colors, theme, gradients, fonts and
+typography, spacing, shapes, components, layout, motion, the copy rules and the
+public launch gate.
+
+It is provided by me. It is the visual authority. Do not edit it without asking.
+If something conflicts with it, document the conflict (section 1, rule 13).
+docs/09-UI-ARCHITECTURE.md explains how the UI is built to match it.
+
+6. MEMORY (MEMORY.md)
+
+What it does: keeps the AI up to date on progress so it does not lose context
+when I start a new chat or switch to another AI tool. Without it, the AI wastes
+tokens re-reading the whole codebase, or makes things up.
+
+Create it at the moment implementation begins, right after I approve the Phase 0
+documents. Do not create it earlier.
+
+Keep it short (target under 200 lines) and put these in it:
+
+- current phase and its status
+- what is done
+- what is in progress, and the exact next step
+- key decisions, one line each, with a link to the decision record
+- a repository map (where things live)
+- commands to run, test, lint and benchmark
+- verified facts (for example the 9Router findings and the verification status
+  of each provider)
+- known issues and gotchas
+- open questions for me
+
+Rules for MEMORY.md:
+
+- Read it at the start of every session.
+- Update it at the end of every work session and at every phase completion.
+- Prune finished detail. Link to the docs instead of copying them.
+- Never store secrets in it.
+- If it disagrees with the docs, the docs win and MEMORY.md is corrected. If it
+  disagrees with the code, check the code and correct MEMORY.md.
+- It is not PROGRESS.md. That file is for me: requirement and
+  phase status, open dependencies and traceability. MEMORY.md is for the AI: a
+  short handoff state. MEMORY.md links to the status file and does not
+  duplicate it.
+
+7. PROGRESS (PROGRESS.md)
+
+What it does: shows me, in one file, how much is done and what is next, so I can
+decide, reprioritize and give instructions. It is written for me, not for the AI.
+
+Create the first version in Phase 0, as soon as the module map exists, with every
+module and every phase listed at 0 percent. Update it after every work session
+and every finished slice, not only at the end of a phase.
+
+Put these in it, in this order, so the top of the file reads in one screen:
+
+1. Header: project name, last updated (real date and time), current phase,
+   current module, and overall progress in percent with a text bar.
+2. How the percentages are calculated. State the formula in the file. Use fixed
+   points per module status: not started 0, interface defined 20, implemented 60,
+   tested 85, integrated 100. Overall progress is the average across modules,
+   weighted by size (small 1, medium 2, large 3), rounded to the nearest 5
+   percent. Never guess a percentage.
+3. Phases table: phase, status, percent, acceptance criteria passed out of total.
+4. Modules table: module, phase, status, percent, tests passing, last updated,
+   notes.
+5. Requirements coverage: done out of total for each ID category (FR, NFR, SEC,
+   UX, ARCH).
+6. Performance budgets: each budget from section 27, its target, and the measured
+   value or "not measured".
+7. Providers: each provider and adapter, verified or untested, and how it was
+   verified.
+8. Launch gate: the checklist from design.md section 17, with each item's status.
+9. Next: the next one to three tasks, each as a task brief (module, slice,
+   interface, tests, files).
+10. Blocked or needs input from me: each item with the options and a recommended
+    default.
+11. Deviations: any time a rule was broken or a size guideline exceeded, with the
+    reason and what was done about it.
+12. Recently completed: the last ten items, each with a date.
+13. MY INSTRUCTIONS: a section I edit. It starts empty.
+
+Rules for PROGRESS.md:
+
+- Read MY INSTRUCTIONS at the start of every session and follow it. When an
+  instruction is done, move it to Recently completed with a date. If an
+  instruction conflicts with this specification, design.md or RULES.md, say so
+  under Blocked or needs input. Do not silently choose.
+- Honest numbers only. A module is not "tested" unless tests exist and pass.
+  Nothing is at 100 percent until its acceptance criteria are verified.
+- Plain Markdown that reads well on GitHub. No tool-specific syntax.
+- It is not MEMORY.md. MEMORY.md is the short handoff state for the AI and links
+  here.
+
+START OF EVERY SESSION
+
+Read in this order: CLAUDE.md, RULES.md, MEMORY.md, the MY INSTRUCTIONS section of
+PROGRESS.md, then the current phase in
+docs/10-IMPLEMENTATION-PLAN.md, then design.md if the work touches the UI, then
+only the other docs the task needs. Do not scan the whole repository unless
+MEMORY.md is missing or clearly stale. The full repository inspection in
+section 1 applies to the first execution and to any session where MEMORY.md is
+missing or stale.
+
+============================================================
+3. BRD REQUIREMENTS
+============================================================
+
+Create docs/00-BRD.md as a proper Business Requirements Document.
+
+The BRD describes WHAT the product needs to accomplish and WHY.
+
+Required sections:
+
+1. Document Control
+2. Executive Summary
+3. Problem Statement
+4. Product Vision
+5. Product Goals
+6. Non-Goals
+7. Target User
+8. User Problems
+9. Core User Journeys
+10. Functional Requirements
+11. Non-Functional Requirements
+12. MVP Scope
+13. Future Scope
+14. Constraints
+15. Assumptions
+16. Risks
+17. Success Criteria
+18. Acceptance Criteria
+19. Requirement Traceability
+
+The BRD must explicitly cover:
+
+- persistent AI conversations
+- independent chat sessions
+- session history
+- local workspace storage
+- 9Router-based LLM access
+- multi-model routing
+- model selection
+- streaming responses
+- file uploads
+- document interaction
+- RAG
+- MCP integration
+- tool interaction
+- security
+- persistence
+- extensibility
+
+The BRD should describe product requirements, not prematurely lock implementation technologies.
+
+============================================================
+4. ARCHITECTURE REQUIREMENTS
+============================================================
+
+Create docs/01-ARCHITECTURE.md.
+
+This is the primary technical architecture document.
+
+Required sections:
+
+1. Architecture Overview
+2. Architectural Goals
+3. Architectural Principles
+4. System Context
+5. High-Level Architecture
+6. Component Architecture
+7. Frontend Architecture
+8. Backend Architecture
+9. LLM Gateway Architecture
+10. 9Router Integration
+11. Streaming Architecture
+12. Workspace Architecture
+13. Session Architecture
+14. Conversation Architecture
+15. File Processing Architecture
+16. RAG Architecture
+17. MCP Architecture
+18. Tool Execution Architecture
+19. Data Architecture
+20. Context Management
+21. Security Boundaries
+22. Error Handling
+23. Observability
+24. Scalability Considerations
+25. Performance Considerations
+26. Deployment Architecture
+27. Technology Choices
+28. Architectural Trade-offs
+29. Future Extension Points
+30. Architecture Decision Summary
+31. Repository Structure (the file and folder layout, and what lives where)
+32. Key Application Flows (send message and stream, persist, switch session, upload file to RAG, MCP tool call, add provider and change model)
+33. Module Map (modules, responsibilities, public interfaces, dependencies, folders; see section 1A)
+
+Use Mermaid diagrams where useful.
+
+At minimum include diagrams for:
+
+- system context
+- component architecture
+- request/streaming flow
+- workspace/session architecture
+- file/RAG flow
+- MCP/tool flow
+- persistence/data relationships
+
+The actual diagrams must reflect the final architecture rather than blindly copying examples.
+
+============================================================
+5. LOCAL WORKSPACE / LOCAL SPACE REQUIREMENT
+============================================================
+
+The application must have its own separate local space.
+
+This is a CORE product requirement.
+
+The application should not behave like a stateless webpage that merely sends messages to 9Router.
+
+It must have a persistent local application workspace where conversations, sessions, metadata, and supported local artifacts can be managed.
+
+Conceptually:
+
+Application
+|
++-- Local Workspace
+    |
+    +-- Sessions
+    |    +-- Session A
+    |    +-- Session B
+    |    +-- Session C
+    |
+    +-- Conversations
+    |
+    +-- Files / Attachments
+    |
+    +-- Workspace Metadata
+    |
+    +-- Model Configuration
+    |
+    +-- MCP Configuration
+    |
+    +-- Application State
+
+The exact storage implementation must be chosen after evaluating the requirements and platform constraints.
+
+Do not simply dump the entire application state into one large JSON file unless there is a strong documented reason.
+
+The local workspace must be designed for:
+
+- persistence across application restarts
+- session history
+- file association
+- conversation retrieval
+- metadata
+- future migrations
+- reasonable querying
+- backup/export possibilities
+- future synchronization if ever required
+
+============================================================
+6. SESSION MODEL
+============================================================
+
+Sessions are a first-class concept.
+
+I want to be able to have separate sessions and return to them later.
+
+Example:
+
+Session: Kaggle AI Project
+    -> messages
+    -> uploaded files
+    -> model configuration
+    -> tool interactions
+
+Session: Learning PyTorch
+    -> messages
+    -> notes/files
+    -> model configuration
+
+Session: Personal Research
+    -> messages
+    -> documents
+    -> MCP/tool interactions
+
+I should be able to:
+
+- create a new session
+- rename a session
+- open an existing session
+- continue chatting inside that session
+- switch to another session
+- see session history
+- search/filter sessions if appropriate
+- delete/archive a session
+- preserve messages within the session
+- preserve relevant attached files
+- preserve relevant session metadata
+
+Switching sessions must NOT destroy or overwrite the previous conversation.
+
+Conceptually:
+
+Session Manager
+|
++-- Session A
+|    +-- Conversation
+|    +-- Messages
+|    +-- Files
+|    +-- Tool history
+|
++-- Session B
+|    +-- Conversation
+|    +-- Messages
+|    +-- Files
+|    +-- Tool history
+|
++-- Session C
+     +-- Conversation
+     +-- Messages
+     +-- Files
+     +-- Tool history
+
+The architecture must explicitly distinguish:
+
+- workspace
+- session
+- conversation
+- message
+- attachment
+- tool execution
+
+Do not collapse all of these concepts into one object if doing so will limit future functionality.
+
+============================================================
+7. SESSION HISTORY
+============================================================
+
+The UI should provide a history/navigation mechanism.
+
+The user should be able to open the application and see previously created sessions.
+
+For example:
+
+WORKSPACE
+
++ New Session
+
+Recent Sessions
+- Kaggle Optimization
+- PyTorch Learning
+- AI Project Research
+- MCP Experiments
+- General Chat
+
+Selecting a session should restore its relevant state and conversation.
+
+History should survive:
+
+- browser/application restart
+- backend restart
+- computer restart
+
+depending on the chosen deployment model.
+
+The implementation must define what data is persistent and where it is stored.
+
+============================================================
+8. LOCAL FILE STORAGE
+============================================================
+
+Uploaded files should be associated with the appropriate session/workspace.
+
+Example:
+
+Workspace
+|
++-- Session A
+|    +-- file1.pdf
+|    +-- dataset.csv
+|
++-- Session B
+     +-- research.md
+
+The application should avoid accidental cross-session context leakage.
+
+A file attached to Session A must not automatically become available as context to Session B unless the user explicitly chooses to share/import it.
+
+The architecture must therefore include explicit ownership/association relationships.
+
+Consider:
+
+Workspace -> Session -> Attachment -> Document -> Chunks -> Embeddings
+
+The exact implementation should be documented.
+
+============================================================
+9. LLM GATEWAY AND PROVIDER INTEGRATION
+============================================================
+
+Use 9Router as the default LLM gateway. Other providers are supported through provider profiles (see section 0).
+
+Do not tightly couple the whole application to 9Router.
+
+Create an abstraction such as:
+
+Application
+    |
+    v
+LLM Gateway / Provider Interface
+    |
+    v
+Provider Adapter (openai-compatible, anthropic, google-gemini)
+    |
+    v
+Provider profile (9Router by default, or any configured provider)
+    |
+    +-- Model A
+    +-- Model B
+    +-- Model C
+    +-- Future Model
+
+Provider-specific API logic (including 9Router specifics) must be isolated from UI and core business logic.
+
+API keys must never be hardcoded.
+
+Use secure environment/configuration handling.
+Provider configuration is a set of named profiles (adapter type, base URL, credential reference). See section 0.
+
+Do not expose the API key to the frontend unnecessarily.
+
+============================================================
+10. MULTI-MODEL SUPPORT
+============================================================
+
+The architecture should support multiple models through the gateway.
+
+Provider-level routing and fallback is performed by 9Router for 9Router profiles (see section 0).
+This application's role is model discovery, selection, configuration and recording.
+
+Required:
+
+- I can change the model at any time: the app default, per session, and
+  between messages within a session.
+- Any model returned by any configured provider is selectable. If a provider
+  does not list a model, I can add its ID manually.
+- Changing the model never loses or rewrites history.
+- A model is identified by (provider profile, model ID), never by a bare ID.
+
+Potential functionality beyond that:
+
+- model selector
+- default model
+- per-session model
+- per-conversation model
+- model capabilities
+- context-window metadata
+- streaming support
+- tool support
+- multimodal capability
+
+Do not implement speculative features prematurely.
+
+Build the abstraction correctly first.
+
+============================================================
+11. STREAMING
+============================================================
+
+Streaming is a first-class requirement.
+
+Do not fake streaming by waiting for the entire response.
+
+Expected flow:
+
+User
+|
+v
+Frontend
+|
+v
+Backend
+|
+v
+LLM Gateway
+|
+v
+9Router
+|
+v
+Model
+|
+v
+Streaming chunks
+|
+v
+Backend
+|
+v
+Frontend incremental rendering
+
+Handle:
+
+- partial chunks
+- completion
+- errors
+- cancellation
+- connection interruption
+- malformed streams
+- timeouts
+
+============================================================
+12. FILE UPLOADS
+============================================================
+
+File upload is a core feature.
+
+Support a clean extensible file-processing architecture.
+
+Initially consider:
+
+- PDF
+- TXT
+- Markdown
+- DOC/DOCX
+- JSON
+- CSV
+- source code
+- other text-based documents
+
+The system should include:
+
+Upload
+-> Validation
+-> Storage
+-> Metadata
+-> Processing
+-> Content Extraction
+-> Chunking
+-> Optional Embedding
+-> Retrieval
+
+Do not create unrelated hardcoded pipelines for every file type.
+
+Use a document-processing abstraction.
+
+============================================================
+13. DOCUMENT RAG
+============================================================
+
+The architecture must support document RAG.
+
+Conceptually:
+
+Uploaded Document
+|
+v
+Parser
+|
+v
+Chunker
+|
+v
+Embedding Model
+|
+v
+Vector Store
+|
+v
+Retriever
+|
+v
+Context Builder
+|
+v
+LLM Gateway
+|
+v
+9Router
+|
+v
+Response
+
+RAG should be contextual.
+
+Do not inject every document into every request.
+
+The system should distinguish:
+
+- normal conversation
+- selected-file interaction
+- retrieval-assisted conversation
+- future tool-assisted retrieval
+
+Document RAG should be modular enough to evolve.
+
+Embedding source is an open decision. Evaluate (a) an embeddings endpoint on 9Router, if Phase 0 verification shows one exists, against (b) a local embedding model.
+Decide through an ADR in docs/03-TECHNICAL-DECISIONS.md. Do not assume either.
+
+============================================================
+14. MCP / TOOL INTEGRATION
+============================================================
+
+MCP integration is a CORE requirement.
+
+The application should eventually support multiple MCP servers.
+
+Conceptually:
+
+AI Workspace
+|
+v
+MCP / Tool Layer
+|
++-- MCP Server A
++-- MCP Server B
++-- MCP Server C
++-- Future MCP Server
+
+Support:
+
+- MCP server configuration
+- server discovery
+- tool discovery
+- tool invocation
+- tool results
+- tool errors
+- server availability
+- permissions
+- configurable servers
+- adding/removing servers
+
+The model should be able to use MCP-backed tools through an explicit tool execution layer.
+
+Do not permit arbitrary tool execution without security boundaries.
+
+Web search and other external capabilities are provided by MCP servers that I
+connect. They are not built into the core.
+
+Plugins that bundle tools and code are not part of this build. MCP is the
+extension mechanism for tools (see section 28).
+
+============================================================
+14A. SKILLS
+============================================================
+
+Skills make repeated work easier and keep token use low.
+
+WHAT A SKILL IS
+
+A skill is a folder containing a SKILL.md file: a short name, a one-line
+description, and instructions the model follows for one kind of task. Optional
+supporting files (templates, reference notes) can sit beside it.
+
+Skills are plain text. In this version a skill cannot contain or run code.
+Anything that needs actions goes through MCP tools and their permission prompts.
+
+Verify the current SKILL.md convention (front matter with name and description)
+against Anthropic's published documentation in Phase 0. Follow it where it fits.
+Do not claim full compatibility with other tools unless it was tested.
+
+WHERE SKILLS LIVE
+
+- Workspace skills: a skills/ folder inside the local workspace. Available in
+  that workspace only.
+- Global skills: a skills/ folder in the application data folder. Available in
+  every workspace.
+- Starter skills: shipped in the repository under skills/starter/ and copied in
+  on first run. I can edit or delete them.
+- The app indexes skills in the background and caches the index by file hash.
+  It never scans skill folders on the send path.
+
+HOW SKILLS SAVE TOKENS (progressive loading)
+
+Level 1, always in context: only the name and description of each enabled skill
+(description limit about 200 characters, a few dozen tokens per skill).
+Level 2, loaded on demand: the full SKILL.md body enters the context only when
+the skill is activated.
+Level 3, loaded only if needed: supporting files, read only when the skill body
+points to one and the model or I ask for it.
+
+Activation:
+
+- By me: type / in the composer and pick a skill, or use the Skills tab.
+- By the model: through a built-in load_skill tool, only when the selected model
+  supports tool calling. If it does not, only my explicit activation works.
+- Never inject a skill body just because a keyword matched. The app may suggest
+  a skill, and I confirm.
+- An activated skill stays active for that session until I deactivate it. It is
+  shown as a chip.
+
+Limits (defaults, adjust after measurement):
+
+- description up to about 200 characters
+- up to 20 enabled skills in the index. Above that, ask me to disable some.
+- body: warn above about 2,000 tokens, reject above about 8,000 tokens unless
+  I override
+- show the estimated token cost of every skill (index cost and body cost) in the
+  UI, and include activated skills in the context meter
+
+Prompt order: keep system instructions, the skill index and activated skills in
+a stable order at the start of the request, so provider-side prompt caching can
+help where a provider offers it. Do not rely on that.
+
+Do not claim token savings without measuring them. Record the measured index and
+body overhead in docs/12-PERFORMANCE.md.
+
+PROVIDER INDEPENDENCE
+
+Skills are injected as text, so they work with any provider and model. Only the
+model-driven load_skill path depends on tool-calling support. Record that in the
+model capability metadata (section 0).
+
+SESSIONS
+
+Active skills are stored per session and do not leak into other sessions. New
+sessions start with none active, except a default set I choose in Settings.
+
+COMPACT (CONTEXT SAVER)
+
+Provide a Compact action for long sessions.
+
+- It asks the current model, using the compact-context skill, to summarize the
+  older part of the conversation into a short brief.
+- The summary is stored as a message marked as a summary.
+- Older messages stay visible in the session history and stay in the database,
+  but the context builder sends the summary instead of them.
+- Show the estimated token count before and after. I can undo it.
+- Never compact automatically without telling me.
+
+STARTER SKILLS
+
+Ship these as plain SKILL.md files. Each body stays under about 300 tokens.
+
+1. concise-answers: answer directly, no preamble or recap, short by default,
+   expand on request. Saves output tokens.
+2. compact-context: how to summarize a conversation into a brief that keeps
+   decisions, open questions, names and constraints. Used by Compact.
+3. document-qa: answer only from retrieved passages, cite them, say clearly when
+   the documents do not contain the answer, quote sparingly.
+4. summarize-document: a short structured summary with key points, decisions and
+   open questions.
+5. code-review: a focused checklist (correctness, security, edge cases, tests)
+   and a brief, prioritized output.
+6. create-skill: helps me write a new skill from a description, with a short
+   description and a lean body.
+
+Each starter skill must be verified manually against at least one configured
+provider before it is described as working.
+
+SECURITY
+
+- Skills I write are trusted as my own instructions. Skills imported from
+  elsewhere are untrusted text: show the full content before enabling, and never
+  enable on import automatically.
+- A skill cannot change tool permissions, provider settings or app settings, and
+  cannot approve a tool call. Tool calls always go through the permission
+  prompts in section 14.
+- Skill text does not override the application's own safety rules or the
+  untrusted labelling of documents and tool output.
+- Supporting-file paths must resolve inside the skill folder. Reject path
+  traversal and symlinks that leave it. Limit file sizes and the number of files.
+- Never log full skill content.
+
+NOT IN SCOPE NOW
+
+Plugins that bundle skills, MCP servers and code. Leave the extension point
+noted in section 28.
+
+============================================================
+15. CONTEXT MANAGEMENT
+============================================================
+
+Separate:
+
+- system instructions
+- conversation history
+- session context
+- selected files
+- active skills
+- retrieved document context
+- tool definitions
+- tool results
+- model configuration
+
+Conceptually:
+
+Request Context
+|
++-- System Context
++-- Session Context
++-- Conversation Context
++-- RAG Context
++-- Tool Context
++-- Skill Context
+|
+v
+Context Builder
+|
+v
+LLM Request
+
+Do not blindly send all historical data to every model request.
+
+Design for future context optimization and context-window constraints.
+See section 14A for skills and the Compact action.
+
+============================================================
+16. SECURITY
+============================================================
+
+Treat the project as a real application.
+
+Consider:
+
+- API-key protection
+- key storage at rest and in exports
+- provider base URL validation and redirects
+- secret scanning before commits
+- environment variables
+- frontend/backend boundaries
+- file validation
+- file size limits
+- malicious files
+- path traversal
+- arbitrary code execution
+- MCP permissions
+- tool permissions
+- skills imported from untrusted sources
+- prompt injection through uploaded documents
+- prompt injection through tool outputs
+- secrets exposure
+- sensitive logging
+- safe error messages
+
+Uploaded documents and MCP outputs must not automatically be treated as trusted instructions.
+
+Explicitly document indirect prompt injection risks.
+
+============================================================
+17. DATA MODEL
+============================================================
+
+Define a conceptual data model.
+
+Potential entities:
+
+Workspace
+Session
+Conversation
+Message
+Attachment
+Document
+DocumentChunk
+Embedding
+MCPServer
+MCPTool
+ToolExecution
+ModelConfiguration
+ProviderProfile
+ModelCatalogEntry (cached listing plus my overrides)
+Skill (path, scope, name, description, hash, token estimates, enabled)
+SessionSkill (session, skill, activated at)
+
+Do not automatically implement every entity.
+
+Determine what is actually necessary.
+
+Document:
+
+- relationships
+- identifiers
+- lifecycle
+- important fields
+- indexes
+- persistence
+- migrations
+
+Use an ER diagram where appropriate.
+
+============================================================
+18. DOCUMENTATION TRACEABILITY
+============================================================
+
+Assign stable requirement IDs.
+
+Use:
+
+FR-xxx  Functional Requirement
+NFR-xxx Non-Functional Requirement
+SEC-xxx Security Requirement
+UX-xxx User Experience Requirement
+ARCH-xxx Architectural Requirement
+
+Create a traceability matrix connecting:
+
+Requirement
+-> BRD ID
+-> Architecture component
+-> Implementation phase
+-> Test/verification
+
+Example:
+
+FR-001 | Persistent sessions | Session Service | Phase 2 | Integration test
+FR-002 | Streaming | LLM Gateway | Phase 2 | E2E test
+FR-003 | File upload | File Service | Phase 3 | Integration test
+FR-004 | RAG | RAG Service | Phase 4 | Retrieval test
+FR-005 | MCP | MCP Service | Phase 5 | Tool test
+
+Use real IDs after analysis.
+
+============================================================
+19. TECHNICAL DECISION RECORDS
+============================================================
+
+Create ADR-style records in:
+
+docs/03-TECHNICAL-DECISIONS.md
+
+For meaningful architectural decisions document:
+
+Decision
+Context
+Alternatives
+Chosen option
+Reason
+Trade-offs
+Consequences
+Future migration implications
+
+Evaluate major decisions such as:
+
+- frontend
+- backend
+- local database
+- file storage
+- vector store
+- embedding approach
+- streaming protocol
+- 9Router adapter
+- MCP implementation
+- document parser
+- authentication if required
+- deployment model
+
+Do not create ADRs for trivial details.
+
+============================================================
+20. API SPECIFICATION
+============================================================
+
+Create docs/05-API-SPECIFICATION.md.
+
+Document application-level API boundaries.
+
+Potential areas:
+
+- sessions
+- conversations
+- messages
+- streaming chat
+- files
+- documents
+- RAG
+- MCP
+- tools
+- providers
+- models
+- skills
+- workspace configuration
+
+The exact endpoints should be derived from the final architecture.
+
+Do not invent endpoints merely to fill the document.
+
+============================================================
+21. SECURITY DOCUMENT
+============================================================
+
+Create docs/08-SECURITY.md.
+
+Document:
+
+- secret management
+- API-key handling
+- provider profile and base URL handling
+- skill import and trust
+- file security
+- workspace isolation
+- session isolation
+- MCP permissions
+- tool execution boundaries
+- prompt injection
+- data leakage risks
+- logging
+- local storage risks
+- future authentication
+- threat model
+
+============================================================
+22. UI ARCHITECTURE
+============================================================
+
+Create docs/09-UI-ARCHITECTURE.md.
+
+The UI should feel like a dedicated AI workspace.
+
+The exact visual design must be derived from design.md.
+
+A conceptual structure could be:
+
++----------------------------------------------------------+
+|                    AI WORKSPACE                          |
++----------------+----------------------+------------------+
+|                |                      |                  |
+| Sessions       | Chat                 | Context          |
+|                |                      |                  |
+| + New Session  | Messages             | Files            |
+|                |                      | RAG              |
+| History        | Streaming response  | MCP / Tools      |
+|                |                      | Model            |
+|                |                      |                  |
++----------------+----------------------+------------------+
+|                  Message Composer                        |
+|        Files + Prompt + Model + Send                    |
++----------------------------------------------------------+
+
+This is only conceptual.
+
+Do not override design.md.
+
+The UI should make session switching obvious and safe.
+
+============================================================
+23. PHASED IMPLEMENTATION
+============================================================
+
+Use the Phase Executor skill if available.
+
+Likely phases:
+
+Phase 0: Discovery and Specification
+- repository inspection
+- design.md analysis
+- skill inspection
+- BRD
+- architecture
+- technical decisions
+- requirements
+- acceptance criteria
+- REVIEW GATE: stop and wait for my approval of the documents (see sections 31 and 34)
+
+Phase 1: Workspace/Foundation
+- application foundation
+- local workspace
+- persistence
+- session model
+- basic UI
+- navigation/history
+- performance harness: hot-path timestamps and a local mock streaming provider, so latency is measured from the first phase (section 27)
+
+Phase 2: Provider Chat
+- provider abstraction and provider profiles (add, edit, test, disable, remove at runtime)
+- openai-compatible adapter, verified against 9Router first
+- secure key storage, .env.example, .gitignore and secret scan
+- model catalog, manual model IDs, and model switching (default, per session, mid-session)
+- streaming with the latency budgets checked
+- persistent messages
+- error handling with distinct provider error states
+- anthropic and google-gemini adapters, each verified against current official docs
+- docs/13-PROVIDERS.md with the verification status of every provider
+
+Phase 3: File System
+- uploads
+- validation
+- storage
+- metadata
+- session/file association
+
+Phase 4: Document Intelligence
+- parsing
+- chunking
+- embeddings
+- vector storage
+- retrieval
+- RAG
+
+Phase 5: MCP
+- MCP configuration
+- discovery
+- tool execution
+- tool results
+- permissions
+
+Phase 5B: Skills
+- skill format, folders and background index
+- progressive loading (index, on-demand body, supporting files)
+- activation by me (/ picker) and by the model (load_skill, when supported)
+- per-session activation and token cost display
+- Compact action
+- starter skills, each verified against at least one provider
+- import review and skill security checks
+
+Phase 6: AI Workspace
+- polished session management
+- model selector
+- context panel
+- file panel
+- MCP panel
+- improved UX
+
+Phase 7: Hardening
+- testing
+- security
+- performance (verify every budget in section 27 and add regression checks)
+- observability
+- recovery
+- documentation
+- production cleanup
+
+These are starting points.
+
+Within each phase, break the work into module-sized tasks (section 1A).
+
+The Phase Executor should restructure phases if its methodology produces a more reliable dependency order.
+
+============================================================
+24. PHASE ACCEPTANCE
+============================================================
+
+Every phase must have:
+
+Phase Goal
+Inputs
+Dependencies
+Tasks
+Files affected
+Technical decisions
+Acceptance criteria
+Tests
+Risks
+Completion verification
+
+Do not mark a phase complete merely because code exists.
+Completion verification includes updating MEMORY.md and PROGRESS.md, including module statuses.
+
+A phase is complete only when acceptance criteria are verified.
+
+After each phase:
+
+1. run tests/checks
+2. inspect implementation
+3. compare against requirements
+4. update documentation
+5. update project status
+6. identify unresolved issues
+
+============================================================
+25. TESTING
+============================================================
+
+Testing must cover:
+
+Unit:
+- provider layer
+- context builder
+- document processing
+- chunking
+- retrieval
+- tool handling
+- session management
+
+Integration:
+- 9Router
+- streaming
+- persistence
+- file upload
+- RAG
+- MCP
+
+End-to-end:
+
+Flow A:
+Create session
+-> send message
+-> receive streamed response
+-> restart
+-> reopen session
+-> history remains
+
+Flow B:
+Create session
+-> upload document
+-> process document
+-> ask question
+-> retrieve context
+-> generate response
+
+Flow C:
+Configure MCP
+-> discover tool
+-> request tool
+-> execute tool
+-> receive result
+-> continue response
+
+Also test session isolation:
+
+Session A files/context
+MUST NOT automatically leak into Session B.
+
+Also test providers and models:
+
+- adding, editing, disabling and removing a provider profile at runtime
+- changing the model mid-session keeps history intact
+- keys never appear in logs, exports, error messages or frontend responses
+- the same model ID on two providers stays distinct
+- every provider listed as supported has an integration test or a documented
+  manual verification, and everything else is listed as untested
+
+Also test skills:
+
+- only names and descriptions are in the request until a skill is activated
+- an activated skill's body appears in the request, and only in that session
+- an imported skill is not enabled until I review it
+- a skill cannot change permissions or approve a tool call
+- supporting-file paths cannot escape the skill folder
+- Compact keeps history visible and sends the summary instead of older messages
+- without tool-calling support, only manual activation is offered
+
+Performance tests: see section 27 (budget checks against a local mock provider).
+
+============================================================
+26. OBSERVABILITY
+============================================================
+
+Provide structured logging where useful.
+
+Potential events:
+
+- request start/end
+- model call
+- streaming state
+- latency
+- errors
+- file processing
+- retrieval
+- tool execution
+- session operations
+
+Never log API keys.
+
+Avoid logging sensitive file contents or private data unnecessarily.
+
+============================================================
+27. PERFORMANCE AND PERCEIVED LATENCY
+============================================================
+
+GOAL
+
+When I use CairnAI, the application itself must never feel slow. I do not want
+to observe any latency that the app adds.
+
+What the app cannot control: network time and model inference time at the
+provider. Do not claim "zero latency" anywhere. Claim only numbers that were
+measured, and state the test setup.
+
+Design for speed from the start. Architecture-level choices (process layout,
+streaming path, storage, rendering approach) are made for latency up front.
+Micro-optimizations are guided by measurement.
+
+Do not trade correctness or security for speed.
+
+HOT PATHS (these must feel instant)
+
+1. opening the app
+2. pressing send until the first token is on screen
+3. streaming render
+4. switching sessions
+5. typing in the composer
+6. opening the model picker
+7. uploading a file (the UI stays responsive)
+8. scrolling long conversations
+
+BUDGETS
+
+These are targets. Validate them in Phase 0 and Phase 7 and record the actual
+measurements in docs/12-PERFORMANCE.md. If a target cannot be met, document the
+measured value and the reason in an ADR.
+
+- Keypress or click to visible feedback: under 100 ms. Typing: within one frame (16 ms).
+- App-added time between pressing send and the request leaving the machine: under 20 ms.
+- App-added time per streamed chunk (chunk received to pixels updated): under one frame.
+- First-token overhead compared with calling the provider directly with the same request: under 30 ms.
+- Switching to an already loaded session: under 100 ms. Any session, even with a long history: under 200 ms.
+- Cold start to interactive UI: under 2 s. Warm start: under 1 s.
+- Opening the model picker: under 50 ms, from cache.
+- Activating or deactivating a skill: under 50 ms. The skill index is cached and never rebuilt on the send path.
+- Streaming a long response that contains code blocks: sustained 60 frames per second, with no visible stutter.
+
+Measure app overhead against a local mock streaming provider so the results do
+not depend on the network. Also record numbers against at least one real
+provider profile.
+
+ARCHITECTURE REQUIREMENTS
+
+Streaming path
+
+1. Pass chunks through as they arrive. Forward each provider chunk to the
+   frontend immediately with an explicit flush. No buffering by middleware,
+   compression or proxies on event streams.
+2. Reuse connections (keep-alive, connection pooling, HTTP/2 where the provider
+   supports it). Warm the connection to the default provider at startup and
+   when the composer gains focus.
+3. Stop cancels the upstream request and stops rendering within a frame.
+
+Send path
+
+4. Before the request leaves, do only what changes the request. Persisting the
+   user message, title generation, logging and embedding never delay the
+   provider request. Persist the user message in parallel with the request, and
+   mark the turn complete only after it is durable.
+5. Buffer assistant tokens in memory and flush them to storage in batches and on
+   completion, cancel or error. A crash must leave a recoverable partial message.
+6. Context building is incremental and cached: cache token counts per message,
+   keep the active session's recent messages in memory, and never re-read or
+   re-tokenize the full history every turn.
+7. Retrieval runs only when the mode needs it, in parallel with other request
+   preparation, under a hard time budget (local retrieval typically under
+   100 ms). If it exceeds the budget, tell me it was skipped. Do not silently
+   answer without the documents.
+8. Optimistic UI: the user message appears instantly and the assistant
+   placeholder appears immediately.
+
+Background work
+
+9. File parsing, chunking and embedding run in background workers with
+   progress. Chat and UI never wait on them. Skip unchanged files using a
+   content hash. Lazy-load heavy parsers.
+10. Initialize MCP servers, parsers and embedding models lazily or during idle
+    time, never before the UI is interactive.
+
+Storage
+
+11. Use a local embedded database with write-ahead logging, indexes for the hot
+    queries (sessions by recency, messages by session and order), prepared
+    statements, no N+1 queries, windowed loading of long histories, and an
+    index-based search for sessions and messages.
+
+Frontend
+
+12. Virtualize the message list and the session list.
+13. Render streaming text incrementally. Batch DOM updates to at most one per
+    animation frame. Memoize completed blocks. Do not re-parse or re-render the
+    whole message for every token. Defer or incrementally apply syntax
+    highlighting.
+14. Keep the initial bundle small. Code-split the context drawer, settings and
+    heavy libraries. Keep main-thread tasks under 50 ms and move heavy work to
+    workers.
+15. Cache model lists per provider profile (stale-while-revalidate). No network
+    call blocks opening the model picker.
+
+Process layout
+
+16. One local backend process with the frontend served locally. No unnecessary
+    hops or serialization layers between UI, backend and provider. No
+    microservices.
+17. Work in one session never slows another session or the UI.
+
+Technology choices
+
+18. Every technology ADR (backend, frontend, database, streaming protocol) must
+    include the latency reasoning for the streaming path, storage and rendering.
+    Do not pick a stack because it is fashionable.
+
+Measurement
+
+19. Instrument the hot path with timestamps: send pressed, request dispatched,
+    first byte from provider, first token rendered, stream complete. Expose them
+    in a developer view or logs. Never log message content.
+20. Provide a benchmark script and automated budget checks so a regression is
+    caught.
+21. Record results in docs/12-PERFORMANCE.md. README performance claims must be
+    measured numbers with the test setup stated.
+
+Also avoid sending unnecessary historical or context data to the LLM.
+
+============================================================
+28. FUTURE EXTENSIBILITY
+============================================================
+
+Leave sensible extension points for:
+
+- additional provider adapter types beyond those in section 0
+- in-app local model inference (local servers reachable through an OpenAI-compatible API are already supported through provider profiles)
+- multimodal models
+- voice
+- image input
+- web search (expected to come from an MCP server, not the core)
+- agents
+- scheduled tasks
+- memory
+- additional MCP servers
+- plugin systems
+- model benchmarking
+- token/cost analytics
+- optional cloud synchronization
+
+Do not implement all of these now.
+
+Architectural readiness is enough.
+
+============================================================
+29. PORTFOLIO OBJECTIVE
+============================================================
+
+The project should be capable of truthfully being presented as:
+
+"Built CairnAI, a personal AI workspace with multi-model routing, persistent conversations and sessions, document RAG, streaming inference, file interaction, and MCP-based tool integration."
+
+Potential engineering areas:
+
+LLM Engineering:
+- multi-model routing
+- streaming
+- context management
+- RAG
+- embeddings
+- MCP/tool integration
+
+Software Engineering:
+- modular architecture
+- persistent local workspace
+- session management
+- file processing
+- API integration
+- security
+- testing
+- error handling
+
+Do not claim features that are not implemented.
+
+Be precise about attribution. Provider-level routing and fallback is done by 9Router.
+What this project builds is the gateway abstraction, model discovery and selection, sessions, RAG, file handling and MCP integration around it.
+Describe the project accordingly in the README and docs.
+Claim support only for providers that have been tested, and claim performance only as measured numbers.
+
+============================================================
+30. DEFINITION OF DONE
+============================================================
+
+The project is complete only when:
+
+- 9Router integration works
+- other providers can be added, edited and removed at runtime with their own API keys
+- the model can be changed for the default, per session and mid-session
+- every provider listed as supported has a passing integration test or a documented manual verification
+- API credentials are handled securely (never logged, exported, committed or shown again)
+- responses stream
+- conversations persist
+- sessions persist
+- sessions can be switched
+- session history is visible
+- session data remains isolated
+- files can be uploaded
+- files can be associated with sessions
+- document processing works
+- RAG works
+- MCP integration works
+- tools can be executed through the intended architecture
+- skills can be created, imported, enabled and activated per session
+- only skill names and descriptions are in the request until a skill is activated, and token costs are visible
+- Compact works without losing visible history
+- provider/model abstraction exists
+- error handling is robust
+- security considerations are implemented
+- tests exist for critical paths
+- the code follows the module map, with no module reaching into another module's internals
+- PROGRESS.md is current and matches the code
+- performance budgets in section 27 are measured and met, or explicitly documented as missed with reasons
+- documentation matches implementation
+- setup is reproducible
+- project structure is clean
+
+If a feature is deferred, explicitly mark it as deferred.
+
+============================================================
+31. FIRST EXECUTION TASK
+============================================================
+
+Before substantial coding:
+
+1. Inspect repository.
+2. Read design.md.
+3. Inspect Claude Code skills.
+4. Locate Phase Executor skill.
+5. Execute Phase Executor if available.
+6. Analyze this specification.
+7. Reconcile it with design.md.
+8. Identify conflicts.
+9. Create docs/00-BRD.md.
+10. Create docs/01-ARCHITECTURE.md.
+11. Create the remaining necessary engineering documents, including docs/10-IMPLEMENTATION-PLAN.md (the phases file), RULES.md, CLAUDE.md and the first version of PROGRESS.md (section 2A).
+12. Define requirement IDs.
+13. Define architecture components and the module map (section 1A).
+14. Define the data model.
+15. Define session/workspace boundaries.
+16. Define the provider abstraction (profiles, adapters, model catalog), with 9Router as the default.
+17. Define streaming architecture and the latency budgets (section 27).
+18. Define file/RAG architecture.
+19. Define MCP/tool architecture.
+20. Define security boundaries.
+21. Define phase dependency graph.
+22. Define acceptance criteria.
+23. STOP. Summarize the documents, the conflicts found, the decisions made,
+    the open assumptions (including the verified 9Router contract) and the
+    phase plan. Wait for my review and approval.
+24. Only after my approval, begin implementation. At that moment create MEMORY.md (section 2A) and keep it updated from then on.
+
+============================================================
+32. ENGINEERING DECISION PRIORITY
+============================================================
+
+When unspecified:
+
+Existing repository constraints
+        ↓
+design.md
+        ↓
+Explicit project requirements (including the latency budgets in section 27)
+        ↓
+Security
+        ↓
+Correctness
+        ↓
+Hot-path latency (send, stream, switch session, open app)
+        ↓
+Maintainability
+        ↓
+Simplicity
+        ↓
+Other performance work
+        ↓
+Future extensibility
+
+Simplicity never justifies a noticeably slower hot path. If a simpler design would make a hot path slower, choose the faster one and document why.
+
+Do not choose technologies merely because they are trendy.
+
+Do not overengineer. Optimize the hot paths deliberately and keep cold paths simple.
+
+Do not introduce microservices unless justified.
+
+Do not create unnecessary abstractions.
+
+============================================================
+33. IMPORTANT DISTINCTION
+============================================================
+
+This project is NOT:
+
+"Build a simple ChatGPT clone that calls an API."
+
+It IS:
+
+"Build a modular personal AI workspace whose default LLM transport is 9Router, which works with any provider a user configures with their own API key, and whose architecture supports persistent local workspaces, independent sessions with history, multi-model routing, streaming inference, file interaction, document RAG, and MCP/tool integration."
+
+The distinction must influence the architecture.
+
+============================================================
+34. FINAL EXECUTION EXPECTATION
+============================================================
+
+Do not stop after merely giving me a plan in chat.
+
+Actually inspect the repository and generate the engineering artifacts as files.
+The only mandatory stop is the Phase 0 review gate in section 31.
+After I approve, implement the project phase-by-phase without asking for permission at every step.
+
+Work module by module (section 1A). This is mandatory.
+Update PROGRESS.md after every work session.
+
+Use the available skills.
+
+Keep the BRD, architecture, requirements, rules, implementation plan, implementation, tests, project status and MEMORY.md synchronized.
+
+When an architectural problem appears, solve it at the correct architectural layer rather than patching symptoms.
+
+The final result should feel like a deliberately engineered personal AI platform, not a tutorial chatbot.
+
+"The project license is MIT"
